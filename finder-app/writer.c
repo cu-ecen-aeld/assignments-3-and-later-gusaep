@@ -6,6 +6,8 @@
 // assume the directory has been already created
 // log using syslog and LOG_USER
 // use syslog to write: 'Writing <string> to <file>'
+// the outpus is visible with:
+// $ journalctl -t aesd_writer
 
 void usage(void) {
     syslog(LOG_ERR, "writer <Path to file> <string to write>");
