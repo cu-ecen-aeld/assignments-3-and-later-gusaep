@@ -65,12 +65,14 @@ bool do_exec(int count, ...)
     case -1:
         perror("fork");
         break;
-    case 0:
-        // this runs on different processs
-        int exit_val = execv(command[0], command);
-        // This should not return
-        perror("execv");
-        exit(exit_val);
+    case 0:{
+
+            // this runs on different processs
+            int exit_val = execv(command[0], command);
+            // This should not return
+            perror("execv");
+            exit(exit_val);
+        }
         break;
 
     default:
