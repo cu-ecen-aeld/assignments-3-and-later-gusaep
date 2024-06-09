@@ -33,8 +33,12 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     cd linux-stable
     echo "Checking out version ${KERNEL_VERSION}"
     git checkout ${KERNEL_VERSION}
-
+    curl https://github.com/torvalds/linux/commit/e33a814e772cdc36436c8c188d8c42d019fda639.patch -o /tmp/yyl.patch
+    git apply /tmp/yyl.patch
     # TODO: Add your kernel build steps here
+    make mrproper
+    make defconfig
+    make -j16 Image modules dtbs
 fi
 
 echo "Adding the Image in outdir"
@@ -48,6 +52,10 @@ then
 fi
 
 # TODO: Create necessary base directories
+mkdir -p ${OUTDIR}/rootfs && cd ${OUTDIR}/rootfs
+mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
+mkdir -p usr/bin usr/sbin usr/lib
+mkdir -p var/log
 
 cd "$OUTDIR"
 if [ ! -d "${OUTDIR}/busybox" ]
@@ -56,25 +64,38 @@ git clone git://busybox.net/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
     # TODO:  Configure busybox
+    make distclean
+    make defconfig
+    make
 else
     cd busybox
 fi
 
 # TODO: Make and install busybox
-
+make CONFIG_PREFIX="${OUTDIR}/rootfs" install
 echo "Library dependencies"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
 ${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
 
 # TODO: Add library dependencies to rootfs
+TOOL_CHAIN_DIR="$(dirname $(which ${CROSS_COMPILE}gcc))/../"
+LD_LOC=$(find ${TOOL_CHAIN_DIR} -iname 'ld-linux-aarch64.so.1')
+cp $LD_LOC ${OUTDIR}/rootfs/lib
 
+for  lib in $("$CROSS_COMPILE"readelf -a  busybox  | grep 'Shared lib'  | grep -o -e '\[.*\]' | tr -d '[]'); do cp $lib "${OUTDIR}/rootfs/lib"; done
 # TODO: Make device nodes
-
+mknod -m 666 "${OUTDIR}/rootfs/dev/null" c 1 3
+mknod -m 666 "${OUTDIR}/rootfs/dev/console" c 1 5
 # TODO: Clean and build the writer utility
-
+cd ${FINDER_APP_DIR}
+make clean
+make writer
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
-
+cp finder.sh "${OUTDIR}/rootfs/home/"
+# cp finder.sh "${OUTDIR}/rootfs/home/"
 # TODO: Chown the root directory
-
+cd "${OUTDIR}/rootfs"
+find . | cpio -H newc -ov --owner root:root > $OUTDIR/initramfs.cpio
 # TODO: Create initramfs.cpio.gz
+gzip -f "$OUTDIR/initfamfs.cpio"
