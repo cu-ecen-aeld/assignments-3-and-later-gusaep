@@ -128,7 +128,8 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
     case -1:
         perror("fork");
         break;
-    case 0:
+    case 0: {
+
         int dup_status = dup2(output_fd, 1); // replace the stdout with the new file descriptor in the new process
         if (dup_status < 0) {
             perror("dup2");
@@ -139,6 +140,7 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
         // This should not return
         perror("execv");
         exit(exit_val);
+    }
         break;
     default:
         break;
