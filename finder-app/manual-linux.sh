@@ -36,9 +36,9 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     wget https://github.com/torvalds/linux/commit/e33a814e772cdc36436c8c188d8c42d019fda639.patch -O /tmp/yyl.patch
     git apply /tmp/yyl.patch
     # TODO: Add your kernel build steps here
-    make mrproper
-    make defconfig
-    make -j16 Image modules dtbs
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE mrproper
+    make ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE defconfig
+    make -j10 ARCH=$ARCH CROSS_COMPILE=$CROSS_COMPILE Image modules dtbs
 fi
 
 echo "Adding the Image in outdir"
@@ -88,6 +88,7 @@ sudo mknod -m 666 "${OUTDIR}/rootfs/dev/null" c 1 3
 sudo mknod -m 666 "${OUTDIR}/rootfs/dev/console" c 1 5
 # TODO: Clean and build the writer utility
 cd ${FINDER_APP_DIR}
+pwd
 make clean
 make writer
 # TODO: Copy the finder related scripts and executables to the /home directory
