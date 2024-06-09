@@ -1,5 +1,5 @@
 
-CROSS_COMPILE=""
+# CROSS_COMPILE=""
 APP="writer"
 
 writer: clean

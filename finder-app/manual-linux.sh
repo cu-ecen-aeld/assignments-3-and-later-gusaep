@@ -33,7 +33,7 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     cd linux-stable
     echo "Checking out version ${KERNEL_VERSION}"
     git checkout ${KERNEL_VERSION}
-    curl https://github.com/torvalds/linux/commit/e33a814e772cdc36436c8c188d8c42d019fda639.patch -o /tmp/yyl.patch
+    wget https://github.com/torvalds/linux/commit/e33a814e772cdc36436c8c188d8c42d019fda639.patch -O /tmp/yyl.patch
     git apply /tmp/yyl.patch
     # TODO: Add your kernel build steps here
     make mrproper
@@ -74,18 +74,18 @@ fi
 # TODO: Make and install busybox
 make CONFIG_PREFIX="${OUTDIR}/rootfs" install
 echo "Library dependencies"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "program interpreter"
-${CROSS_COMPILE}readelf -a bin/busybox | grep "Shared library"
+${CROSS_COMPILE}readelf -a busybox | grep "program interpreter"
+${CROSS_COMPILE}readelf -a busybox | grep "Shared library"
 
 # TODO: Add library dependencies to rootfs
 TOOL_CHAIN_DIR="$(dirname $(which ${CROSS_COMPILE}gcc))/../"
 LD_LOC=$(find ${TOOL_CHAIN_DIR} -iname 'ld-linux-aarch64.so.1')
 cp $LD_LOC ${OUTDIR}/rootfs/lib
 
-for  lib in $("$CROSS_COMPILE"readelf -a  busybox  | grep 'Shared lib'  | grep -o -e '\[.*\]' | tr -d '[]'); do cp $lib "${OUTDIR}/rootfs/lib"; done
+for  lib in $("$CROSS_COMPILE"readelf -a  busybox  | grep 'Shared lib'  | grep -o -e '\[.*\]' | tr -d '[]'); do cp "$(find "$TOOL_CHAIN_DIR" -iname $lib)" "${OUTDIR}/rootfs/lib"; done
 # TODO: Make device nodes
-mknod -m 666 "${OUTDIR}/rootfs/dev/null" c 1 3
-mknod -m 666 "${OUTDIR}/rootfs/dev/console" c 1 5
+sudo mknod -m 666 "${OUTDIR}/rootfs/dev/null" c 1 3
+sudo mknod -m 666 "${OUTDIR}/rootfs/dev/console" c 1 5
 # TODO: Clean and build the writer utility
 cd ${FINDER_APP_DIR}
 make clean
