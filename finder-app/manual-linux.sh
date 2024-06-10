@@ -99,4 +99,4 @@ cp finder.sh "${OUTDIR}/rootfs/home/"
 cd "${OUTDIR}/rootfs"
 find . | cpio -H newc -ov --owner root:root > $OUTDIR/initramfs.cpio
 # TODO: Create initramfs.cpio.gz
-gzip -f "$OUTDIR/initfamfs.cpio"
+gzip -f "$OUTDIR/initramfs.cpio"
