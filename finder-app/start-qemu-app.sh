@@ -2,7 +2,7 @@
 # Script to open qemu terminal.
 # Author: Siddhant Jajoo.
 
-set -ex
+set -e
 
 OUTDIR=$1
 

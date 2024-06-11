@@ -53,7 +53,8 @@ fi
 
 #  Create necessary base directories
 mkdir -p ${OUTDIR}/rootfs && cd ${OUTDIR}/rootfs
-mkdir -p bin dev etc home lib lib64 proc sbin sys tmp usr var
+mkdir -p bin dev etc home lib64 proc sbin sys tmp usr var
+ln -s lib64 lib
 mkdir -p usr/bin usr/sbin usr/lib
 mkdir -p var/log
 
@@ -80,9 +81,9 @@ ${CROSS_COMPILE}readelf -a busybox | grep "Shared library"
 #  Add library dependencies to rootfs
 TOOL_CHAIN_DIR="$(dirname $(which ${CROSS_COMPILE}gcc))/../"
 LD_LOC=$(find ${TOOL_CHAIN_DIR} -iname 'ld-linux-aarch64.so.1')
-cp $LD_LOC ${OUTDIR}/rootfs/lib
+cp $LD_LOC ${OUTDIR}/rootfs/lib64
 
-for  lib in $("$CROSS_COMPILE"readelf -a  busybox  | grep 'Shared lib'  | grep -o -e '\[.*\]' | tr -d '[]'); do cp "$(find "$TOOL_CHAIN_DIR" -iname $lib)" "${OUTDIR}/rootfs/lib"; done
+for  lib in $("$CROSS_COMPILE"readelf -a  busybox  | grep 'Shared lib'  | grep -o -e '\[.*\]' | tr -d '[]'); do cp "$(find "$TOOL_CHAIN_DIR" -iname $lib)" "${OUTDIR}/rootfs/lib64"; done
 #  Make device nodes
 sudo mknod -m 666 "${OUTDIR}/rootfs/dev/null" c 1 3
 sudo mknod -m 666 "${OUTDIR}/rootfs/dev/console" c 1 5
@@ -94,11 +95,9 @@ make writer
 #  Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
 cp -Lr conf/ "${OUTDIR}/rootfs/home/"
-cp finder-test.sh "${OUTDIR}/rootfs/home/"
-cp finder.sh "${OUTDIR}/rootfs/home/"
+cp -Lr conf/ "${OUTDIR}/rootfs/"
+cp ./*.sh "${OUTDIR}/rootfs/home/"
 cp writer "${OUTDIR}/rootfs/home/"
-cp autorun-qemu.sh "${OUTDIR}/rootfs/home/"
-# cp finder.sh "${OUTDIR}/rootfs/home/"
 # Chown the root directory
 sudo chown -R root:root "${OUTDIR}/rootfs"
 cd "${OUTDIR}/rootfs"
