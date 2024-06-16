@@ -1,9 +1,10 @@
 
-# CROSS_COMPILE=""
 APP="writer"
 
+all: clean writer
+
 writer: clean
-	${CROSS_COMPILE}gcc -g -o ${APP} -Wall -Wextra ${APP}.c
+	${CC} -g -o ${APP} -Wall -Wextra ${APP}.c
 
 .PHONY: clean
 clean:
