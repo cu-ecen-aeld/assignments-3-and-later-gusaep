@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/usr/bin/env sh
 
 # takes two args:
 #  1: directory on the file system: filesdir
