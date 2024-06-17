@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env sh
 # Run unit tests for the assignment
 
 # Automate these steps from the readme:
