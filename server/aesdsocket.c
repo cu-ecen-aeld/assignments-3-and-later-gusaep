@@ -58,21 +58,23 @@ void sig_handler(int signal)
     }
 }
 
-int dist_to_char(const char *buffer, char char_to_find)
+int dist_to_char(const char *buffer, char char_to_find, size_t max_len)
 {
     int distance = 0;
-    while (*buffer != '\0' && *buffer != char_to_find)
+    while (buffer !=NULL && *buffer != '\0' && *buffer != char_to_find)
     {
         buffer++;
         distance++;
+        if (distance >= max_len) {
+            break;
+        }
     }
     return distance;
 }
 
 int serve(int log_fd, void *buffer, size_t buffer_len)
 {
-    printf("NOT printed in daemon mode\n");
-    int status = -1;
+    int status = 1;
     struct sockaddr_storage others_addr;
     struct addrinfo hints = {
         .ai_family = AF_UNSPEC,
@@ -81,6 +83,7 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
     };
     struct addrinfo *server_info;
     char ip[INET6_ADDRSTRLEN];
+    memset(ip,0,INET6_ADDRSTRLEN);
 
     status = getaddrinfo(NULL, AESD_SERVER_SOCKET_CHAR, &hints, &server_info);
     if (status != 0)
@@ -89,7 +92,7 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
     }
     else
     {
-        int closed = 1;
+        int closed = TRUE;
         int sock_fd = socket(server_info->ai_family,
                              server_info->ai_socktype,
                              server_info->ai_protocol);
@@ -109,17 +112,17 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
         socklen_t sin_size = sizeof others_addr;
         while (!terminate)
         {
-            if (closed == 1)
+            if (closed == TRUE)
             {
-                inet_ntop(others_addr.ss_family, &((struct sockaddr_in *)&others_addr)->sin_addr, ip, sizeof(ip));
                 updated_sock_fd = accept(sock_fd, (struct sockaddr *)&others_addr, &sin_size);
-                syslog(LOG_DEBUG, "Accepted connection from %s", ip);
-                if (updated_sock_fd == -1)
-                {
+                if (updated_sock_fd != -1) {
+                    closed = FALSE;
+                    inet_ntop(others_addr.ss_family, &((struct sockaddr_in *)&others_addr)->sin_addr, ip, sizeof(ip));
+                    syslog(LOG_DEBUG, "Accepted connection from %s", ip);
+                } else {
                     syslog(LOG_ERR, "Error accepting connection");
                     terminate = TRUE;
                 }
-                closed = 0;
             }
 
             if (-1 != updated_sock_fd && closed != 1)
@@ -127,32 +130,24 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
                 ssize_t recvd = recv(updated_sock_fd, buffer, buffer_len, 0);
                 if (recvd == 0)
                 {
-                    // inet_ntop(others_addr.ss_family, &((struct sockaddr_in*)&others_addr)->sin_addr, ip, sizeof(ip));
                     int bytes_written = lseek(log_fd, 0, SEEK_END);
-                    char *read_buffer = (char *)calloc(AESD_SERVER_BUFFER_SIZE, 1);
-                    // char* line = read_buffer;
+                    char *read_buffer = (char *)malloc(AESD_SERVER_BUFFER_SIZE);
                     lseek(log_fd, 0, SEEK_SET);
                     syslog(LOG_DEBUG, "bytes writen into file %d", bytes_written);
-                    // Re using the passed buffer
+                    syslog(LOG_DEBUG, "read buffer %d", read_buffer);
                     while (bytes_written > 0)
                     {
                         int read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
                         while (read_chunk != 0)
                         {
                             syslog(LOG_DEBUG, "read bytes from file log %d", read_chunk);
-                            int line_len = dist_to_char(read_buffer, '\n');
+                            int line_len = dist_to_char(read_buffer, '\n', AESD_SERVER_BUFFER_SIZE);
                             syslog(LOG_DEBUG, "dist to line %d", line_len);
                             int data_sent;
-                            if (line_len > AESD_SERVER_BUFFER_SIZE - 1)
-                            {
-                                // send chunks
-                                data_sent = send(updated_sock_fd, read_buffer, line_len, 0);
-                                // line += line_len;
+                            if (line_len <= AESD_SERVER_BUFFER_SIZE - 1) {
+                                ++line_len;
                             }
-                            else
-                            {
-                                data_sent = send(updated_sock_fd, read_buffer, ++line_len, 0);
-                            }
+                            data_sent = send(updated_sock_fd, read_buffer, line_len, 0);
                             syslog(LOG_DEBUG, "data sent %d", data_sent);
                             bytes_written -= data_sent;
                             if (data_sent < read_chunk)
@@ -171,9 +166,7 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
                 else
                 {
                     int data_written = write(log_fd, buffer, recvd);
-                    syslog(LOG_DEBUG, "Received stuff %ld", recvd);
                     syslog(LOG_DEBUG, "Written %d", data_written);
-                    // syslog(LOG_DEBUG, "Sent[%d] %s", data_written, (char*)buffer);
                 }
             }
         }
@@ -195,18 +188,12 @@ int main(int argc, char *argv[])
     sigaction(SIGINT, &sigact, 0);
     sigaction(SIGTERM, &sigact, 0);
     openlog("aesdsocket", 0, LOG_USER);
-    printf("aesdsocket\n");
-    int ret_val = -1;
-    void *data_buffer = malloc(AESD_SERVER_BUFFER_SIZE);
+    int ret_val = EXIT_SUCCESS;
+    void *data_buffer = calloc(AESD_SERVER_BUFFER_SIZE, 1);
 
     if (argc > 1 && (0 == strncmp(argv[1], "-d", 4)))
     {
-        printf("daemonize\n");
         daemon(0, 0);
-    }
-    else
-    {
-        printf("NOT daemonizing\n");
     }
 
     int log_fd = createdatalog(AESD_SERVER_DATA_LOG_PATH);
@@ -214,8 +201,8 @@ int main(int argc, char *argv[])
     {
         if (serve(log_fd, data_buffer, AESD_SERVER_BUFFER_SIZE) != 0)
         {
-            perror("serve failed:");
-            ret_val = -1;
+            syslog(LOG_ERR, "Server failed: %s", strerror(errno));
+            ret_val = -EXIT_FAILURE;
         }
         close(log_fd);
         if (unlink(AESD_SERVER_DATA_LOG_PATH) != 0)
