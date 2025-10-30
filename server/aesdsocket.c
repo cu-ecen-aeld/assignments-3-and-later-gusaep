@@ -12,13 +12,16 @@
 #include <syslog.h>
 #include <time.h>
 #include <unistd.h>
+#include <pthread.h>
+#include <stdbool.h>
 
-#define TRUE (!!1)
-#define FALSE (!TRUE)
+#define TRUE (true)
+#define FALSE (false)
 #define AESD_SERVER_SOCKET (9000)
 #define AESD_SERVER_SOCKET_CHAR "9000"
 #define AESD_SERVER_DATA_LOG_PATH ("/var/tmp/aesdsocketdata")
 #define AESD_SERVER_BUFFER_SIZE (1 * 1024)
+#define THREAD_STACK_SIZE ()
 
 /**
  * Handle SIGINT and SIGTERM
@@ -28,6 +31,18 @@
  */
 volatile sig_atomic_t terminate = FALSE;
 
+/**
+ * Synchronize access to socket data
+*/
+pthread_mutex_t data_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct thread_params_t {
+    int conn_id;
+    int log_fd;
+} thread_params_t;
+
+
+pthread_t thread_id;
 /**
  * Creates the file AESD_SERVER_DATA_LOG_PATH if it does not
  * exist
@@ -71,6 +86,69 @@ int dist_to_char(const char *buffer, char char_to_find, size_t max_len)
         }
     }
     return distance;
+}
+
+void* handle_connection(void* thread_params) {
+    thread_params_t* params = thread_params;
+    int conn_id = params->conn_id;
+    int log_fd = params->log_fd;
+    
+    free(thread_params); // better free earlier than forget to free
+    void *data_buffer = calloc(1, AESD_SERVER_BUFFER_SIZE);
+
+    syslog(LOG_DEBUG, "b4 recv");
+    ssize_t recvd = recv(conn_id, data_buffer, AESD_SERVER_BUFFER_SIZE, MSG_DONTWAIT);
+    syslog(LOG_DEBUG, "afte recv");
+        if (recvd == 0 || (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)))
+        {
+            char *read_buffer = (char *)calloc(1, AESD_SERVER_BUFFER_SIZE);
+            int bytes_written = lseek(log_fd, 0, SEEK_END);
+            lseek(log_fd, 0, SEEK_SET);
+            syslog(LOG_DEBUG, "bytes writen into file %d", bytes_written);
+            while (bytes_written > 0)
+            {
+                int read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
+                while (read_chunk != 0)
+                {
+                    syslog(LOG_DEBUG, "read bytes from file log %d", read_chunk);
+                    int line_len = dist_to_char(read_buffer, '\n', AESD_SERVER_BUFFER_SIZE);
+                    syslog(LOG_DEBUG, "dist to line %d", line_len);
+                    int data_sent;
+                    if (line_len <= AESD_SERVER_BUFFER_SIZE - 1)
+                    {
+                        ++line_len;
+                    }
+                    data_sent = send(conn_id, read_buffer, line_len, MSG_NOSIGNAL);
+                    if (data_sent < 0)
+                    {
+                        if (errno == EPIPE)
+                        {
+                            syslog(LOG_DEBUG, "send error EPIPE");
+                            break;
+                        }
+                        syslog(LOG_DEBUG, "Send error %d", data_sent);
+                    }
+                    syslog(LOG_DEBUG, "data sent %d", data_sent);
+                    bytes_written -= data_sent;
+                    if (data_sent < read_chunk)
+                    {
+                        lseek(log_fd, -1 * (read_chunk - data_sent), SEEK_CUR);
+                    }
+                    read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
+                }
+            }
+            close(conn_id);
+            // closed = TRUE;
+            free(read_buffer);
+            // syslog(LOG_DEBUG, "Closed connection from %s", ip);
+        }
+        else
+        {
+            int data_written = write(log_fd, data_buffer, recvd);
+            syslog(LOG_DEBUG, "Written %d", data_written);
+        }
+        free(data_buffer);
+        return NULL;
 }
 
 int serve(int log_fd, void *buffer, size_t buffer_len)
@@ -134,58 +212,73 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
         }
         if (-1 != updated_sock_fd && closed != 1)
         {
-            syslog(LOG_DEBUG, "b4 recv");
-            ssize_t recvd = recv(updated_sock_fd, buffer, buffer_len, MSG_DONTWAIT);
-            syslog(LOG_DEBUG, "afte recv");
-            if (recvd == 0 || (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)))
-            {
-                int bytes_written = lseek(log_fd, 0, SEEK_END);
-                char *read_buffer = (char *)calloc(1, AESD_SERVER_BUFFER_SIZE);
-                lseek(log_fd, 0, SEEK_SET);
-                syslog(LOG_DEBUG, "bytes writen into file %d", bytes_written);
-                while (bytes_written > 0)
-                {
-                    int read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
-                    while (read_chunk != 0)
-                    {
-                        syslog(LOG_DEBUG, "read bytes from file log %d", read_chunk);
-                        int line_len = dist_to_char(read_buffer, '\n', AESD_SERVER_BUFFER_SIZE);
-                        syslog(LOG_DEBUG, "dist to line %d", line_len);
-                        int data_sent;
-                        if (line_len <= AESD_SERVER_BUFFER_SIZE - 1)
-                        {
-                            ++line_len;
-                        }
-                        data_sent = send(updated_sock_fd, read_buffer, line_len, MSG_NOSIGNAL);
-                        if (data_sent < 0)
-                        {
-                            if (errno == EPIPE)
-                            {
-                                syslog(LOG_DEBUG, "send error EPIPE");
-                                break;
-                            }
-                            syslog(LOG_DEBUG, "Send error %d", data_sent);
-                        }
-                        syslog(LOG_DEBUG, "data sent %d", data_sent);
-                        bytes_written -= data_sent;
-                        if (data_sent < read_chunk)
-                        {
-                            lseek(log_fd, -1 * (read_chunk - data_sent), SEEK_CUR);
-                        }
-                        read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
-                    }
-                }
+            // We cannot pass the updated_sock_fd since it will be 
+            // out of scope for the thread, then the thread needs to
+            // free it
+            thread_params_t* thread_params = (int*)malloc(sizeof(thread_params_t));
+            thread_params->conn_id = updated_sock_fd; 
+            thread_params->conn_id = log_fd; 
+            if (pthread_create(&thread_id, NULL, handle_connection, (void*)thread_params) == -1) {
+                syslog(LOG_ERR, "Unable to create thread");
                 close(updated_sock_fd);
-                closed = TRUE;
-                free(read_buffer);
-                memset(buffer, 0, buffer_len);
-                syslog(LOG_DEBUG, "Closed connection from %s", ip);
+                free(thread_params);
+            } else {
+                syslog(LOG_DEBUG, "Thread created %ld", thread_id);
             }
-            else
-            {
-                int data_written = write(log_fd, buffer, recvd);
-                syslog(LOG_DEBUG, "Written %d", data_written);
-            }
+            // ====>
+            // syslog(LOG_DEBUG, "b4 recv");
+            // ssize_t recvd = recv(updated_sock_fd, buffer, buffer_len, MSG_DONTWAIT);
+            // syslog(LOG_DEBUG, "afte recv");
+            // if (recvd == 0 || (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)))
+            // {
+                // int bytes_written = lseek(log_fd, 0, SEEK_END);
+                // char *read_buffer = (char *)calloc(1, AESD_SERVER_BUFFER_SIZE);
+                // lseek(log_fd, 0, SEEK_SET);
+                // syslog(LOG_DEBUG, "bytes writen into file %d", bytes_written);
+                // while (bytes_written > 0)
+                // {
+                    // int read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
+                    // while (read_chunk != 0)
+                    // {
+                        // syslog(LOG_DEBUG, "read bytes from file log %d", read_chunk);
+                        // int line_len = dist_to_char(read_buffer, '\n', AESD_SERVER_BUFFER_SIZE);
+                        // syslog(LOG_DEBUG, "dist to line %d", line_len);
+                        // int data_sent;
+                        // if (line_len <= AESD_SERVER_BUFFER_SIZE - 1)
+                        // {
+                            // ++line_len;
+                        // }
+                        // data_sent = send(updated_sock_fd, read_buffer, line_len, MSG_NOSIGNAL);
+                        // if (data_sent < 0)
+                        // {
+                            // if (errno == EPIPE)
+                            // {
+                                // syslog(LOG_DEBUG, "send error EPIPE");
+                                // break;
+                            // }
+                            // syslog(LOG_DEBUG, "Send error %d", data_sent);
+                        // }
+                        // syslog(LOG_DEBUG, "data sent %d", data_sent);
+                        // bytes_written -= data_sent;
+                        // if (data_sent < read_chunk)
+                        // {
+                            // lseek(log_fd, -1 * (read_chunk - data_sent), SEEK_CUR);
+                        // }
+                        // read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
+                    // }
+                // }
+                // close(updated_sock_fd);
+                // closed = TRUE;
+                // free(read_buffer);
+                // memset(buffer, 0, buffer_len);
+                // syslog(LOG_DEBUG, "Closed connection from %s", ip);
+            // }
+            // else
+            // {
+                // int data_written = write(log_fd, buffer, recvd);
+                // syslog(LOG_DEBUG, "Written %d", data_written);
+            // }
+            // <====
         }
     }
     if (terminate)
@@ -204,7 +297,6 @@ int main(int argc, char *argv[])
     sigaction(SIGTERM, &sigact, 0);
     openlog("aesdsocket", 0, LOG_USER);
     int ret_val = EXIT_SUCCESS;
-    void *data_buffer = calloc(1, AESD_SERVER_BUFFER_SIZE);
     if (argc > 1 && (0 == strncmp(argv[1], "-d", 4)))
     {
         daemon(0, 0);
@@ -212,7 +304,7 @@ int main(int argc, char *argv[])
     int log_fd = createdatalog(AESD_SERVER_DATA_LOG_PATH);
     if (log_fd != -1)
     {
-        if (serve(log_fd, data_buffer, AESD_SERVER_BUFFER_SIZE) != 0)
+        if (serve(log_fd, NULL, AESD_SERVER_BUFFER_SIZE) != 0)
         {
             syslog(LOG_ERR, "Server failed: %s", strerror(errno));
             ret_val = -EXIT_FAILURE;
@@ -227,7 +319,6 @@ int main(int argc, char *argv[])
     {
         syslog(LOG_ERR, "Failed to create log file");
     }
-    free(data_buffer);
     closelog();
     return ret_val;
 }
