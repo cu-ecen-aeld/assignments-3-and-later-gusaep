@@ -148,7 +148,7 @@ void *timestamp_logger(void *thread_params) {
       syslog(LOG_DEBUG, "Poll interrutped");
     }
   }
-  pthread_exit(nullptr);
+  pthread_exit(NULL);
 }
 
 void *handle_connection(void *thread_params) {
