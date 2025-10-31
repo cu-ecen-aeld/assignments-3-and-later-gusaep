@@ -113,7 +113,7 @@ void *timestamp_logger(void *thread_params) {
   int tfd = timerfd_create(CLOCK_MONOTONIC, 0);
   if (tfd == -1) {
     syslog(LOG_ERR, "Failed to create timer %s", strerror(errno));
-    pthread_exit(&tfd);
+    return NULL;
   }
   polld.fd = tfd;
   polld.events = POLLIN;
@@ -148,7 +148,7 @@ void *timestamp_logger(void *thread_params) {
       syslog(LOG_DEBUG, "Poll interrutped");
     }
   }
-  pthread_exit(NULL);
+  return NULL;
 }
 
 void *handle_connection(void *thread_params) {
@@ -225,7 +225,7 @@ void *handle_connection(void *thread_params) {
   }
   close(conn_id);
   free(data_buffer);
-  pthread_exit(NULL);
+  return NULL;
 }
 
 int serve(int log_fd) {
