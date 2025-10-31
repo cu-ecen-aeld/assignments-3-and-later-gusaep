@@ -17,9 +17,10 @@
 // Linked list implementation
 #include "queue.h"
 // Needed for the periodic task
+#include <sys/poll.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/timerfd.h>
-#include <sys/poll.h>
 
 #define TRUE (true)
 #define FALSE (false)
@@ -37,6 +38,7 @@
  */
 volatile sig_atomic_t terminate = FALSE;
 
+SLIST_HEAD(slisthead, thread_list_t) thread_id_list;
 /**
  * Synchronize access to socket data
  */
@@ -54,9 +56,11 @@ typedef struct thread_ts_params_t
     int log_fd;
 } thread_ts_params_t;
 
-typedef struct thread_list_t {
+typedef struct thread_list_t
+{
     pthread_t id;
-    SLIST_ENTRY(thread_list_t) next;
+    SLIST_ENTRY(thread_list_t)
+    next;
 } thread_list_t;
 
 pthread_t thread_id;
@@ -72,7 +76,7 @@ int createdatalog(const char *log_path)
     if (file_fd == -1)
     {
         syslog(LOG_ERR, "Unable to create/open file %s", log_path);
-        return -1;
+        return file_fd;
     }
     return file_fd;
 }
@@ -105,60 +109,69 @@ int dist_to_char(const char *buffer, char char_to_find, size_t max_len)
     return distance;
 }
 
-void* timestamp_logger(void* thread_params) {
+void *timestamp_logger(void *thread_params)
+{
     thread_ts_params_t *params = thread_params;
     // timespec* ts = params->ts;
     int log_fd = params->log_fd;
     free(thread_params);
     int64_t missed = 0;
-    bool cont = true;
     char date[100];
     time_t tm;
     struct tm *tmp;
     struct pollfd polld;
 
-    
     int tfd = timerfd_create(CLOCK_MONOTONIC, 0);
-    if (tfd == -1) {
+    if (tfd == -1)
+    {
         syslog(LOG_ERR, "Failed to create timer %s", strerror(errno));
         pthread_exit(&tfd);
     }
     polld.fd = tfd;
     polld.events = POLLIN;
-    
+
     struct itimerspec itspec = {
         .it_interval.tv_sec = 10,
         .it_interval.tv_nsec = 0,
         .it_value.tv_sec = 10,
-        .it_value.tv_nsec = 0
-    };
-    if (timerfd_settime(tfd, 0, &itspec, NULL) != 0) {
+        .it_value.tv_nsec = 0};
+    if (timerfd_settime(tfd, 0, &itspec, NULL) != 0)
+    {
         syslog(LOG_ERR, "timerfd_settime failed: %s", strerror(errno));
     }
-    while (!terminate){
+    while (!terminate)
+    {
         // wait
-        syslog(LOG_DEBUG, "Waiting for timer");
         int poll_rv;
-        if ((poll_rv = poll(&polld, 1, 11 * 10000)) == -1) {
+        if ((poll_rv = poll(&polld, 1,  250)) == -1)
+        {
             syslog(LOG_ERR, "Error polling timer: %s", strerror(errno));
-        } else if (poll_rv == 0) {
-            syslog(LOG_ERR, "Poll timeout");
-        } else if (polld.revents & POLLIN) {
+        }
+        else if (poll_rv == 0)
+        {
+        //    syslog(LOG_ERR, "Poll timeout");
+        }
+        else if (polld.revents & POLLIN)
+        {
             int ret = read(tfd, &missed, sizeof(missed));
-            if (ret == -1) {
+            if (ret == -1)
+            {
                 syslog(LOG_ERR, "Error reading timer: %s", strerror(errno));
                 // cont = false;
             }
             tm = time(NULL);
             tmp = localtime(&tm);
-            strftime(date, sizeof(date), "%m", tmp);
-            syslog(LOG_ERR, "DATE: %s", date);
-        } else {
+            strftime(date, sizeof(date), "timestamp:%a, %d %b %y %T %z\n", tmp);
+            pthread_mutex_lock(&data_mutex);
+            int data_written = write(log_fd, date, strlen(date));
+            pthread_mutex_unlock(&data_mutex);
+            syslog(LOG_ERR, "Writen date: %s : chars: %d", date, data_written);  
+        }
+        else
+        {
             syslog(LOG_DEBUG, "Poll interrutped");
         }
-        
     }
-
 }
 
 void *handle_connection(void *thread_params)
@@ -170,31 +183,41 @@ void *handle_connection(void *thread_params)
     free(thread_params); // better free earlier than forget to free
     void *data_buffer = calloc(1, AESD_SERVER_BUFFER_SIZE);
     bool recv_continue = true;
-    while(recv_continue){
-
-        syslog(LOG_DEBUG, "b4 recv: conn: %d : log: %d", conn_id, log_fd);
+    while (recv_continue)
+    {
+        syslog(LOG_DEBUG, "%lu: b4 recv: conn: %d : log: %d",pthread_self(), conn_id, log_fd);
         ssize_t recvd = recv(conn_id, data_buffer, AESD_SERVER_BUFFER_SIZE, MSG_DONTWAIT);
-        syslog(LOG_DEBUG, "afte recv: %ld", recvd);
+        syslog(LOG_DEBUG, "%lu: afte recv: %ld", pthread_self(), recvd);
         if (recvd == 0 || (recvd == -1 && (errno == EAGAIN || errno == EWOULDBLOCK)))
         {
             char *read_buffer = (char *)calloc(1, AESD_SERVER_BUFFER_SIZE);
-            int bytes_written = lseek(log_fd, 0, SEEK_END);
-            lseek(log_fd, 0, SEEK_SET);
-            syslog(LOG_DEBUG, "bytes writen into file %d", bytes_written);
+            struct stat fst = {0};
+            fstat(log_fd, &fst);
+            int bytes_written = fst.st_size; // get the file size w/o seek
+            off_t this_thread_offset = 0;
+
+            syslog(LOG_DEBUG, "%lu: bytes writen into file %d", pthread_self(), bytes_written);
             while (bytes_written > 0)
             {
-                int read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
-                while (read_chunk != 0)
+                syslog(LOG_DEBUG, "%lu: bytes writen %d", pthread_self(), bytes_written);
+                int read_chunk = pread(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE, this_thread_offset);
+                int sent_offset = 0;
+                // Send the data stored in read_buffer
+                syslog(LOG_DEBUG, "%lu: read bytes from file log %d", pthread_self(), read_chunk);
+                while (read_chunk >= 0 && sent_offset < read_chunk)
                 {
-                    syslog(LOG_DEBUG, "read bytes from file log %d", read_chunk);
-                    int line_len = dist_to_char(read_buffer, '\n', AESD_SERVER_BUFFER_SIZE);
-                    syslog(LOG_DEBUG, "dist to line %d", line_len);
-                    int data_sent;
-                    if (line_len <= AESD_SERVER_BUFFER_SIZE - 1)
+                    int line_len = dist_to_char(read_buffer + sent_offset, '\n', AESD_SERVER_BUFFER_SIZE - sent_offset);
+                    syslog(LOG_DEBUG, "%lu: dist to line %d",pthread_self(), line_len);
+                    if (line_len <= AESD_SERVER_BUFFER_SIZE - (sent_offset + 1))
                     {
                         ++line_len;
+                    } else if(line_len == 0) {
+                        // the char was not found, is it a long line?
+                        // Send the remaining of the buffer and continue a read
+                        line_len = read_chunk - sent_offset;
                     }
-                    data_sent = send(conn_id, read_buffer, line_len, MSG_NOSIGNAL);
+                     // else: dont add a new line
+                    int data_sent = send(conn_id, read_buffer+sent_offset, line_len, MSG_NOSIGNAL);
                     if (data_sent < 0)
                     {
                         if (errno == EPIPE)
@@ -204,23 +227,24 @@ void *handle_connection(void *thread_params)
                         }
                         syslog(LOG_DEBUG, "Send error %d", data_sent);
                     }
-                    syslog(LOG_DEBUG, "data sent %d", data_sent);
+                    syslog(LOG_DEBUG, "%lu data sent %d :: written: %lu", pthread_self(), data_sent, bytes_written);
                     bytes_written -= data_sent;
-                    if (data_sent < read_chunk)
-                    {
-                        lseek(log_fd, -1 * (read_chunk - data_sent), SEEK_CUR);
-                    }
-                    read_chunk = read(log_fd, read_buffer, AESD_SERVER_BUFFER_SIZE);
+                    sent_offset += data_sent;
+
+                    syslog(LOG_DEBUG, "%lu data sent %d :: written: %lu :: read_chunk: %i :: th-offset: %lu sent_offset: %lu", pthread_self(), data_sent, bytes_written, read_chunk, this_thread_offset, sent_offset);
                 }
-                
+                this_thread_offset += read_chunk;
             }
+            syslog(LOG_DEBUG, "%lu: done? %d", pthread_self(), bytes_written);
             recv_continue = false;
             free(read_buffer);
             syslog(LOG_DEBUG, "Closed connection");
         }
         else
         {
+            pthread_mutex_lock(&data_mutex);
             int data_written = write(log_fd, data_buffer, recvd);
+            pthread_mutex_unlock(&data_mutex);
             syslog(LOG_DEBUG, "Written %d :: Errno: %s", data_written, strerror(errno));
         }
     }
@@ -231,19 +255,21 @@ void *handle_connection(void *thread_params)
 
 int serve(int log_fd, void *buffer, size_t buffer_len)
 {
+
     int status = 1;
-    SLIST_HEAD(slisthead, thread_list_t) thread_id_list;
-    SLIST_INIT(&thread_id_list);
     // Start the timer thread
-    thread_ts_params_t* th_ts_params = malloc(sizeof(thread_ts_params_t));
+    thread_ts_params_t *th_ts_params = malloc(sizeof(thread_ts_params_t));
     th_ts_params->ts.tv_sec = 10;
     th_ts_params->log_fd = log_fd;
     pthread_t timer_thread_id;
-    if (pthread_create(&timer_thread_id, NULL, timestamp_logger, th_ts_params) == -1) {
+    if (pthread_create(&timer_thread_id, NULL, timestamp_logger, th_ts_params) == -1)
+    {
         free(th_ts_params);
-    } else {
+    }
+    else
+    {
         syslog(LOG_DEBUG, "Timer thread created: %ld", timer_thread_id);
-        thread_list_t* th = malloc(sizeof(thread_list_t));
+        thread_list_t *th = malloc(sizeof(thread_list_t));
         th->id = timer_thread_id;
         SLIST_INSERT_HEAD(&thread_id_list, th, next);
     }
@@ -263,7 +289,6 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
         syslog(LOG_ERR, "getaddrinfo error: %s", gai_strerror(status));
         return -1;
     }
-    int closed = TRUE;
     int sock_fd = socket(server_info->ai_family,
                          server_info->ai_socktype,
                          server_info->ai_protocol);
@@ -285,7 +310,7 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
         syslog(LOG_ERR, "Error binding socket %s", strerror(errno));
     }
     freeaddrinfo(server_info);
-    listen(sock_fd, 10);
+    listen(sock_fd, 100);
     socklen_t sin_size = sizeof others_addr;
     while (!terminate)
     {
@@ -294,22 +319,12 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
         updated_sock_fd = accept(sock_fd, (struct sockaddr *)&others_addr, &sin_size);
         if (updated_sock_fd != -1)
         {
-            closed = FALSE;
             inet_ntop(others_addr.ss_family, &((struct sockaddr_in *)&others_addr)->sin_addr, ip, sizeof(ip));
-            syslog(LOG_DEBUG, "Accepted connection from %s", ip);
-        }
-        else
-        {
-            syslog(LOG_ERR, "Error accepting connection");
-            terminate = TRUE;
-        }
-
-        if (-1 != updated_sock_fd)
-        {
+            syslog(LOG_DEBUG, "Accepted connection from %s : accpt: %d", ip, updated_sock_fd);
             // We cannot pass the updated_sock_fd since it will be
             // out of scope for the thread, then the thread needs to
             // free it
-            thread_params_t *thread_params = (int *)malloc(sizeof(thread_params_t));
+            thread_params_t *thread_params = (thread_params_t *)malloc(sizeof(thread_params_t));
             thread_params->conn_id = updated_sock_fd;
             thread_params->log_fd = log_fd;
             if (pthread_create(&thread_id, NULL, handle_connection, (void *)thread_params) == -1)
@@ -321,28 +336,35 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
             else
             {
                 // append thread id to the list
-                thread_list_t* th = malloc(sizeof(thread_list_t));
+                thread_list_t *th = malloc(sizeof(thread_list_t));
                 th->id = thread_id;
                 SLIST_INSERT_HEAD(&thread_id_list, th, next);
                 syslog(LOG_DEBUG, "Thread created %ld", thread_id);
             }
             updated_sock_fd = -1;
         }
+        else
+        {
+            syslog(LOG_ERR, "Error accepting connection");
+            terminate = TRUE;
+        }
+
     }
     if (terminate)
     {
         syslog(LOG_DEBUG, "Caught signal, exiting");
     }
-    thread_list_t* node;
-    int th_ret = 0;
-    SLIST_FOREACH(node, &thread_id_list, next){
+    thread_list_t *node;
+    SLIST_FOREACH(node, &thread_id_list, next)
+    {
         syslog(LOG_DEBUG, "Join thread: %ld", node->id);
-        pthread_join(node->id, &th_ret);
+        pthread_join(node->id, NULL);
         syslog(LOG_DEBUG, "Joined: %ld", node->id);
     }
     // Clean the list itself
-    while(!SLIST_EMPTY(&thread_id_list)) {
-        thread_list_t* node = SLIST_FIRST(&thread_id_list);
+    while (!SLIST_EMPTY(&thread_id_list))
+    {
+        thread_list_t *node = SLIST_FIRST(&thread_id_list);
         SLIST_REMOVE_HEAD(&thread_id_list, next);
         free(node);
     }
@@ -352,6 +374,7 @@ int serve(int log_fd, void *buffer, size_t buffer_len)
 
 int main(int argc, char *argv[])
 {
+    SLIST_INIT(&thread_id_list);
     struct sigaction sigact = {
         .sa_handler = sig_handler};
     sigaction(SIGINT, &sigact, 0);
@@ -364,23 +387,23 @@ int main(int argc, char *argv[])
         daemon(0, 0);
     }
     int log_fd = createdatalog(AESD_SERVER_DATA_LOG_PATH);
-    if (log_fd != -1)
-    {
-        if (serve(log_fd, NULL, AESD_SERVER_BUFFER_SIZE) != 0)
-        {
-            syslog(LOG_ERR, "Server failed: %s", strerror(errno));
-            ret_val = -EXIT_FAILURE;
-        }
-        close(log_fd);
-        if (unlink(AESD_SERVER_DATA_LOG_PATH) != 0)
-        {
-            syslog(LOG_ERR, "Failed to delete log file: %s", strerror(errno));
-        }
-    }
-    else
-    {
+    if (log_fd == -1) {
         syslog(LOG_ERR, "Failed to create log file");
+        goto out0;
+    } 
+
+    if (serve(log_fd, NULL, AESD_SERVER_BUFFER_SIZE) != 0)
+    {
+        syslog(LOG_ERR, "Server failed: %s", strerror(errno));
+        ret_val = -EXIT_FAILURE;
     }
+    close(log_fd);
+    if (unlink(AESD_SERVER_DATA_LOG_PATH) != 0)
+    {
+        syslog(LOG_ERR, "Failed to delete log file: %s", strerror(errno));
+    }
+out0:
     closelog();
+    pthread_mutex_destroy(&data_mutex);
     return ret_val;
 }
